@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.8)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.9)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1226,18 +1226,27 @@ function Get-UninstallStringFromRegistry($appName) {
             $us = [string]$e.UninstallString
             if (-not $us) { continue }
 
-            # 2) MSI: troca /I por /X e forca silencioso
+            # 2) Casos especiais: desinstaladores proprios com flag de silencio nao-padrao.
+            #    A flag varia por programa, entao tratamos os conhecidos pelo executavel.
+            #    AnyDesk: a UninstallString usa "--uninstall" (que SEMPRE abre GUI);
+            #    a doc oficial manda usar "--silent --remove" pra remocao sem tela.
+            if ($us -match '(?i)anydesk\.exe') {
+                $exe = if ($us -match '"([^"]+anydesk\.exe)"') { $matches[1] } else { ($us -split '\s+--')[0].Trim('"') }
+                return ('"' + $exe + '" --silent --remove')
+            }
+
+            # 3) MSI: troca /I por /X e forca silencioso
             if ($us -match 'msiexec') {
                 $us = $us -replace '(?i)/I', '/X'
                 if ($us -notmatch '(?i)/quiet|/qn') { $us = $us + ' /qn /norestart' }
                 return $us
             }
-            # 3) Inno Setup (unins000.exe): /VERYSILENT
+            # 4) Inno Setup (unins000.exe): /VERYSILENT
             if ($us -match '(?i)unins\d*\.exe') {
                 if ($us -notmatch '(?i)/verysilent|/silent') { $us = $us + ' /VERYSILENT /NORESTART /SUPPRESSMSGBOXES' }
                 return $us
             }
-            # 4) NSIS e genericos: /S (a maioria respeita)
+            # 5) NSIS e genericos: /S (a maioria respeita)
             if ($us -notmatch '(?i)/S\b|/silent|/verysilent') { $us = $us + ' /S' }
             return $us
         }
