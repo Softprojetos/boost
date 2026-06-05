@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.4)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.5)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1107,21 +1107,12 @@ function Ensure-InstallTimer {
 
 function Set-AppInstalled($btn) {
     if (-not $btn) { return }
-    # Em vez de travar, o botao vira "remover" (vermelho) e fica clicavel.
+    # Botao instalado vira "remover" (vermelho), clicavel. A acao do clique e
+    # decidida por um UNICO handler (criado na construcao do botao) que olha o
+    # estado atual — evita anexar 2 handlers e o conflito que isso causava.
     $btn.Content = 'remover'
     $btn.Foreground = (Brush '#FF7088')
     $btn.IsHitTestVisible = $true
-    # garante um unico handler de remover por botao (nao re-anexa em re-deteccoes)
-    if (-not $script:UninstallWired) { $script:UninstallWired = @{} }
-    $key = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($btn)
-    if (-not $script:UninstallWired.ContainsKey($key)) {
-        $btn.Add_Click({ param($snd,$e)
-            if ($snd.Content -ne 'remover') { return }  # so age no estado "remover"
-            $a = $snd.Tag
-            Start-AppUninstall $snd $a.N $a.W
-        })
-        $script:UninstallWired[$key] = $true
-    }
 }
 
 function Set-AppNotInstalled($btn) {
@@ -1476,10 +1467,17 @@ function Build-ModeContent {
                     $ib = New-Object System.Windows.Controls.Button
                     if ($script:ghostStyle) { $ib.Style = $script:ghostStyle }
                     $ib.Content = 'instalar'; $ib.Tag = $app; $ib.MinWidth = 78
+                    # UM unico handler decide a acao pelo estado atual do botao.
+                    # 'instalar' -> instala; 'remover' -> remove. Estados de progresso
+                    # ('na fila...', 'instalando...', 'removendo...') sao ignorados.
                     $ib.Add_Click({ param($snd,$e)
-                        if ($snd.Content -ne 'instalar') { return }  # nao age se estiver "remover"/em progresso
                         $a = $snd.Tag
-                        Start-AppInstall $snd $a.N $a.W
+                        if (-not $a) { return }
+                        switch ([string]$snd.Content) {
+                            'instalar' { Start-AppInstall $snd $a.N $a.W }
+                            'remover'  { Start-AppUninstall $snd $a.N $a.W }
+                            default    { }  # em progresso: nao faz nada
+                        }
                     })
                     $row.AddChild($ib)
                     $script:InstallBtns += $ib
