@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.7)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.8)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1140,7 +1140,27 @@ function Pump-Uninstalls {
     $job = $script:UninstallQueue[0]
     $script:UninstallQueue.RemoveAt(0)
     $job.Btn.Content = 'removendo...'
-    Write-Status ('desinstalando: ' + $job.Name + ' ...')
+    Write-Status ('removendo: ' + $job.Name + ' ...')
+
+    # O 'winget uninstall --silent' e furado: pra apps com AppsAndFeaturesEntries
+    # ele abre a janela do desinstalador mesmo com --silent (bug conhecido do winget).
+    # Por isso, se o registro tem uma forma SILENCIOSA (QuietUninstallString ou
+    # UninstallString + flag certa), usamos ela direto — garante remocao sem tela.
+    $silent = Get-UninstallStringFromRegistry $job.Name
+    if ($silent) {
+        try {
+            $proc = Start-Process -FilePath $env:ComSpec -ArgumentList ('/c ' + $silent) -WindowStyle Hidden -PassThru -ErrorAction Stop
+            $script:UninstallActive = @{ Proc = $proc; Btn = $job.Btn; Name = $job.Name; Via = 'registro' }
+            Ensure-UninstallTimer
+            return
+        } catch {
+            # se falhar, cai pro winget abaixo
+            Write-Status ($job.Name + ': desinstalador do registro falhou, tentando winget...')
+        }
+    }
+
+    # Sem forma silenciosa no registro: usa winget (lida com mais casos, mas
+    # pode mostrar a janela do desinstalador em alguns apps).
     $wg = Get-WingetPath
     if (-not $wg) {
         Set-AppInstalled $job.Btn
@@ -1148,14 +1168,12 @@ function Pump-Uninstalls {
         Pump-Uninstalls; return
     }
     try {
-        # comando oficial: winget uninstall -h --id ID --silent --accept-source-agreements
-        # --source winget evita prompt de acordo da Microsoft Store
         $proc = Start-Process -FilePath $wg -ArgumentList @('uninstall','--id',$job.Wid,'--silent','--accept-source-agreements','--disable-interactivity') -WindowStyle Hidden -PassThru -ErrorAction Stop
-        $script:UninstallActive = @{ Proc = $proc; Btn = $job.Btn; Name = $job.Name }
+        $script:UninstallActive = @{ Proc = $proc; Btn = $job.Btn; Name = $job.Name; Via = 'winget' }
         Ensure-UninstallTimer
     } catch {
         Set-AppInstalled $job.Btn
-        Write-Status ('erro desinstalando ' + $job.Name + ': ' + $_.Exception.Message)
+        Write-Status ('erro removendo ' + $job.Name + ': ' + $_.Exception.Message)
         Pump-Uninstalls
     }
 }
@@ -1170,27 +1188,13 @@ function Ensure-UninstallTimer {
         try { if (-not $job.Proc.HasExited) { return } } catch { }
         $ec = -1
         try { $ec = $job.Proc.ExitCode } catch { }
-        if ($ec -eq 0) {
-            Set-AppNotInstalled $job.Btn; Write-Status ('ok: ' + $job.Name + ' desinstalado.')
-        }
-        else {
-            # winget falhou (app sem id do repo, instalado por fora, etc).
-            # Fallback igual ao Winhance: acha a UninstallString no registro e roda.
-            $us = Get-UninstallStringFromRegistry $job.Name
-            if ($us) {
-                Write-Status ($job.Name + ': winget nao removeu, tentando via registro do Windows...')
-                try {
-                    Start-Process -FilePath $env:ComSpec -ArgumentList ('/c ' + $us) -WindowStyle Hidden -ErrorAction Stop
-                    Set-AppNotInstalled $job.Btn
-                    Write-Status ('ok: ' + $job.Name + ' desinstalado (via registro).')
-                } catch {
-                    Set-AppInstalled $job.Btn
-                    Write-Status ($job.Name + ': falha no desinstalador do registro - ' + $_.Exception.Message)
-                }
-            } else {
-                Set-AppInstalled $job.Btn
-                Write-Status ($job.Name + ': winget saiu com codigo ' + $ec + ' (cancelado ou nao encontrado).')
-            }
+        # MSI usa 3010 pra "sucesso, requer reboot"; tratamos como ok tambem
+        if ($ec -eq 0 -or $ec -eq 3010) {
+            Set-AppNotInstalled $job.Btn
+            Write-Status ('ok: ' + $job.Name + ' removido.')
+        } else {
+            Set-AppInstalled $job.Btn
+            Write-Status ($job.Name + ': nao foi removido (codigo ' + $ec + ' - cancelado ou requer remocao manual).')
         }
         $script:UninstallActive = $null
         Pump-Uninstalls
@@ -1198,8 +1202,10 @@ function Ensure-UninstallTimer {
     $script:UninstallTimer.Start()
 }
 
-# Fallback de desinstalacao via registro do Windows (ARP), espelhando a logica do Winhance:
-# procura a UninstallString nas 3 chaves padrao (HKLM 64/32 + HKCU) casando pelo nome do app.
+# Busca a melhor forma SILENCIOSA de desinstalar via registro (ARP).
+# Prioridade: QuietUninstallString (silenciosa por design) > UninstallString
+# com flag silenciosa adequada ao tipo de desinstalador (MSI, NSIS, Inno).
+# Retorna o comando pronto, ou $null se nao achar.
 function Get-UninstallStringFromRegistry($appName) {
     if (-not $appName) { return $null }
     $needle = $appName.ToLowerInvariant().Trim()
@@ -1210,16 +1216,30 @@ function Get-UninstallStringFromRegistry($appName) {
     )
     foreach ($p in $paths) {
         $entries = Get-ItemProperty $p -ErrorAction SilentlyContinue | Where-Object {
-            $_.DisplayName -and $_.UninstallString -and
+            $_.DisplayName -and ($_.UninstallString -or $_.QuietUninstallString) -and
             $_.DisplayName.ToLowerInvariant().Contains($needle)
         }
         foreach ($e in $entries) {
+            # 1) QuietUninstallString: ja e silenciosa por definicao
+            if ($e.QuietUninstallString) { return [string]$e.QuietUninstallString }
+
             $us = [string]$e.UninstallString
-            if ($us) {
-                # prefere desinstalacao silenciosa quando o desinstalador suporta /S (NSIS) ou msiexec /x
-                if ($us -match 'msiexec' -and $us -notmatch '/quiet|/qn') { $us = $us -replace '/I', '/X'; $us = $us + ' /quiet /norestart' }
+            if (-not $us) { continue }
+
+            # 2) MSI: troca /I por /X e forca silencioso
+            if ($us -match 'msiexec') {
+                $us = $us -replace '(?i)/I', '/X'
+                if ($us -notmatch '(?i)/quiet|/qn') { $us = $us + ' /qn /norestart' }
                 return $us
             }
+            # 3) Inno Setup (unins000.exe): /VERYSILENT
+            if ($us -match '(?i)unins\d*\.exe') {
+                if ($us -notmatch '(?i)/verysilent|/silent') { $us = $us + ' /VERYSILENT /NORESTART /SUPPRESSMSGBOXES' }
+                return $us
+            }
+            # 4) NSIS e genericos: /S (a maioria respeita)
+            if ($us -notmatch '(?i)/S\b|/silent|/verysilent') { $us = $us + ' /S' }
+            return $us
         }
     }
     return $null
