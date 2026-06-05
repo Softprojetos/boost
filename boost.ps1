@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.0)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.1)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1127,9 +1127,15 @@ function Start-AppDetection {
     $wg = Get-WingetPath
     if (-not $wg) { Write-Status 'winget nao encontrado: nao da pra detectar instalados.'; return }
     Write-Status 'verificando programas ja instalados (winget)...'
-    $script:DetectFile = Join-Path $env:TEMP ('boost-wg-' + [guid]::NewGuid().ToString('N') + '.json')
+    # 'winget list' lista TUDO que esta instalado (nao so o que e exportavel, ao contrario do 'export'
+    #  que pula apps de fonte desconhecida). Salvamos a saida de texto pra parsear depois.
+    $script:DetectFile = Join-Path $env:TEMP ('boost-wglist-' + [guid]::NewGuid().ToString('N') + '.txt')
     try {
-        $script:DetectProc = Start-Process -FilePath $wg -ArgumentList @('export','-o',$script:DetectFile,'--accept-source-agreements','--nowarn','--disable-interactivity') -WindowStyle Hidden -PassThru -ErrorAction Stop
+        # --disable-interactivity evita spinner/prompt; redireciono stdout pro arquivo.
+        # Forco UTF-8 e largura grande pra coluna Id nao quebrar em duas linhas.
+        $script:DetectProc = Start-Process -FilePath $env:ComSpec `
+            -ArgumentList ('/c chcp 65001>nul & "' + $wg + '" list --accept-source-agreements --disable-interactivity > "' + $script:DetectFile + '" 2>&1') `
+            -WindowStyle Hidden -PassThru -ErrorAction Stop
     } catch {
         Write-Status ('erro ao iniciar winget: ' + $_.Exception.Message); return
     }
@@ -1138,20 +1144,38 @@ function Start-AppDetection {
     $script:DetectTimer.Add_Tick({
         try { if (-not $script:DetectProc.HasExited) { return } } catch { }
         $script:DetectTimer.Stop()
-        $ids = @{}
+        $listText = ''
         try {
             if (Test-Path $script:DetectFile) {
-                $j = Get-Content $script:DetectFile -Raw -ErrorAction Stop | ConvertFrom-Json
-                foreach ($src in $j.Sources) { foreach ($pk in $src.Packages) { if ($pk.PackageIdentifier) { $ids[$pk.PackageIdentifier.ToLower()] = $true } } }
+                $listText = Get-Content $script:DetectFile -Raw -Encoding UTF8 -ErrorAction Stop
                 Remove-Item $script:DetectFile -Force -ErrorAction SilentlyContinue
             }
-        } catch { Write-Status ('erro ao ler winget export: ' + $_.Exception.Message) }
+        } catch { Write-Status ('erro ao ler winget list: ' + $_.Exception.Message) }
+        # Casamos de duas formas pra maxima precisao:
+        #  (1) pelo Id winget exato (ex: Brave.Brave) -> texto colapsado sem espacos
+        #  (2) pelo nome do programa (ex: "Google Chrome") -> quando o winget lista
+        #      o app mas sem mapear pro Id do repo (mostra Id ARP\... generico)
+        $hayId   = ($listText -replace '\s', '').ToLowerInvariant()
+        $hayName = $listText.ToLowerInvariant()
         $count = 0
         foreach ($b in $script:InstallBtns) {
             $app = $b.Tag
-            if ($app -and $ids.ContainsKey(([string]$app.W).ToLower())) { Set-AppInstalled $b; $count++ }
+            if (-not $app) { continue }
+            $hit = $false
+            # (1) match por Id winget
+            if ($app.W) {
+                $needle = ([string]$app.W).Replace(' ', '').ToLowerInvariant()
+                if ($needle -and $hayId.Contains($needle)) { $hit = $true }
+            }
+            # (2) fallback: match pelo nome (linha inteira do winget list contem o nome)
+            if (-not $hit -and $app.N) {
+                $nm = ([string]$app.N).ToLowerInvariant().Trim()
+                # nomes muito curtos/genericos sao ignorados pra evitar falso-positivo
+                if ($nm.Length -ge 4 -and $hayName.Contains($nm)) { $hit = $true }
+            }
+            if ($hit) { Set-AppInstalled $b; $count++ }
         }
-        Write-Status ('verificacao concluida: ' + $count + ' ja instalados (de ' + $ids.Count + ' detectados).')
+        Write-Status ('verificacao concluida: ' + $count + ' programas ja instalados.')
     })
     $script:DetectTimer.Start()
 }
