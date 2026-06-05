@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.9)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.1.0)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1615,6 +1615,13 @@ try {
     $script:UninstallQueue = New-Object 'System.Collections.Generic.List[object]'
     $script:UninstallActive = $null
     $script:UninstallTimer = $null
+    # Reset do estado da deteccao. Variaveis $script: persistem no processo do
+    # PowerShell entre execucoes; sem este reset, rodar o app de novo no MESMO
+    # PowerShell pulava a deteccao (DetectStarted ficava $true da vez anterior).
+    $script:DetectStarted = $false
+    $script:DetectTimer = $null
+    $script:DetectProc = $null
+    $script:DetectFile = $null
     $script:Panels = @{}
     $script:NavButtons = @{}
     $script:UpdCards = @{}
