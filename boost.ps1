@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.3)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.4)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1107,16 +1107,16 @@ function Ensure-InstallTimer {
 
 function Set-AppInstalled($btn) {
     if (-not $btn) { return }
-    # Em vez de travar, o botao vira "desinstalar" (vermelho) e fica clicavel.
-    $btn.Content = 'desinstalar'
+    # Em vez de travar, o botao vira "remover" (vermelho) e fica clicavel.
+    $btn.Content = 'remover'
     $btn.Foreground = (Brush '#FF7088')
     $btn.IsHitTestVisible = $true
-    # garante um unico handler de desinstalar por botao (nao re-anexa em re-deteccoes)
+    # garante um unico handler de remover por botao (nao re-anexa em re-deteccoes)
     if (-not $script:UninstallWired) { $script:UninstallWired = @{} }
     $key = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($btn)
     if (-not $script:UninstallWired.ContainsKey($key)) {
         $btn.Add_Click({ param($snd,$e)
-            if ($snd.Content -ne 'desinstalar') { return }  # so age no estado "desinstalar"
+            if ($snd.Content -ne 'remover') { return }  # so age no estado "remover"
             $a = $snd.Tag
             Start-AppUninstall $snd $a.N $a.W
         })
@@ -1133,7 +1133,7 @@ function Set-AppNotInstalled($btn) {
 
 function Start-AppUninstall($btn, $name, $wid) {
     if (-not (Test-Winget)) { Write-Status 'winget nao encontrado.'; return }
-    if (-not $wid) { Write-Status ('sem id winget pra desinstalar: ' + $name); return }
+    if (-not $wid) { Write-Status ('sem id winget pra remover: ' + $name); return }
     $btn.IsHitTestVisible = $false
     $btn.Content = 'na fila...'
     $script:UninstallQueue += @{ Btn = $btn; Name = $name; Wid = $wid }
@@ -1477,7 +1477,7 @@ function Build-ModeContent {
                     if ($script:ghostStyle) { $ib.Style = $script:ghostStyle }
                     $ib.Content = 'instalar'; $ib.Tag = $app; $ib.MinWidth = 78
                     $ib.Add_Click({ param($snd,$e)
-                        if ($snd.Content -ne 'instalar') { return }  # nao age se estiver "desinstalar"/em progresso
+                        if ($snd.Content -ne 'instalar') { return }  # nao age se estiver "remover"/em progresso
                         $a = $snd.Tag
                         Start-AppInstall $snd $a.N $a.W
                     })
