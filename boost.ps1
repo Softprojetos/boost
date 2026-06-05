@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.2)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.3)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1248,15 +1248,15 @@ function Start-AppDetection {
     $script:DetectStarted = $true
     $wg = Get-WingetPath
     if (-not $wg) { Write-Status 'winget nao encontrado: nao da pra detectar instalados.'; return }
-    Write-Status 'verificando programas ja instalados (winget)...'
-    # 'winget list' lista TUDO que esta instalado (nao so o que e exportavel, ao contrario do 'export'
-    #  que pula apps de fonte desconhecida). Salvamos a saida de texto pra parsear depois.
+    Write-Status 'verificando programas ja instalados...'
+    # Detecta de duas fontes pra ser confiavel (winget sozinho falha em apps fora do repo):
+    #   FONTE 1: 'winget list --source winget' -> pega o Id do repo. Uso --source winget
+    #            pra NAO disparar atualizacao da fonte msstore (que gera barra de download).
+    #   FONTE 2: registro do Windows (ARP) -> pega TODO programa instalado pelo nome.
     $script:DetectFile = Join-Path $env:TEMP ('boost-wglist-' + [guid]::NewGuid().ToString('N') + '.txt')
     try {
-        # --disable-interactivity evita spinner/prompt; redireciono stdout pro arquivo.
-        # Forco UTF-8 e largura grande pra coluna Id nao quebrar em duas linhas.
         $script:DetectProc = Start-Process -FilePath $env:ComSpec `
-            -ArgumentList ('/c chcp 65001>nul & "' + $wg + '" list --accept-source-agreements --disable-interactivity > "' + $script:DetectFile + '" 2>&1') `
+            -ArgumentList ('/c chcp 65001>nul & "' + $wg + '" list --source winget --accept-source-agreements --disable-interactivity > "' + $script:DetectFile + '" 2>&1') `
             -WindowStyle Hidden -PassThru -ErrorAction Stop
     } catch {
         Write-Status ('erro ao iniciar winget: ' + $_.Exception.Message); return
@@ -1266,33 +1266,47 @@ function Start-AppDetection {
     $script:DetectTimer.Add_Tick({
         try { if (-not $script:DetectProc.HasExited) { return } } catch { }
         $script:DetectTimer.Stop()
+
+        # --- FONTE 1: saida do winget list (limpa de barra de progresso/spinner) ---
         $listText = ''
         try {
             if (Test-Path $script:DetectFile) {
                 $listText = Get-Content $script:DetectFile -Raw -Encoding UTF8 -ErrorAction Stop
                 Remove-Item $script:DetectFile -Force -ErrorAction SilentlyContinue
             }
-        } catch { Write-Status ('erro ao ler winget list: ' + $_.Exception.Message) }
-        # Casamos de duas formas pra maxima precisao:
-        #  (1) pelo Id winget exato (ex: Brave.Brave) -> texto colapsado sem espacos
-        #  (2) pelo nome do programa (ex: "Google Chrome") -> quando o winget lista
-        #      o app mas sem mapear pro Id do repo (mostra Id ARP\... generico)
-        $hayId   = ($listText -replace '\s', '').ToLowerInvariant()
-        $hayName = $listText.ToLowerInvariant()
+        } catch { }
+        # remove linhas de progresso de download (blocos unicode e contadores "x KB / y MB")
+        $clean = ($listText -split "`r?`n") | Where-Object { $_ -notmatch '[\u2580-\u259F]' -and $_ -notmatch 'KB /|MB /|GB /' }
+        $hayId = (($clean -join "`n") -replace '\s', '').ToLowerInvariant()
+
+        # --- FONTE 2: registro do Windows (todo programa instalado aparece aqui pelo nome) ---
+        $arpNames = New-Object System.Collections.Generic.List[string]
+        foreach ($rp in @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )) {
+            try {
+                Get-ItemProperty $rp -ErrorAction SilentlyContinue |
+                    Where-Object { $_.DisplayName } |
+                    ForEach-Object { $arpNames.Add([string]$_.DisplayName) }
+            } catch { }
+        }
+        $hayName = ($arpNames -join "`n").ToLowerInvariant()
+
+        # --- casa cada app do catalogo por Id (fonte 1) OU nome (fonte 2) ---
         $count = 0
         foreach ($b in $script:InstallBtns) {
             $app = $b.Tag
             if (-not $app) { continue }
             $hit = $false
-            # (1) match por Id winget
             if ($app.W) {
                 $needle = ([string]$app.W).Replace(' ', '').ToLowerInvariant()
                 if ($needle -and $hayId.Contains($needle)) { $hit = $true }
             }
-            # (2) fallback: match pelo nome (linha inteira do winget list contem o nome)
             if (-not $hit -and $app.N) {
                 $nm = ([string]$app.N).ToLowerInvariant().Trim()
-                # nomes muito curtos/genericos sao ignorados pra evitar falso-positivo
+                # nome com >=4 chars pra evitar falso-positivo; busca no registro
                 if ($nm.Length -ge 4 -and $hayName.Contains($nm)) { $hit = $true }
             }
             if ($hit) { Set-AppInstalled $b; $count++ }
