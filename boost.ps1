@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.1)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.2)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1107,9 +1107,131 @@ function Ensure-InstallTimer {
 
 function Set-AppInstalled($btn) {
     if (-not $btn) { return }
-    $btn.Content = 'instalado'
-    $btn.Foreground = (Brush '#36F9A6')
+    # Em vez de travar, o botao vira "desinstalar" (vermelho) e fica clicavel.
+    $btn.Content = 'desinstalar'
+    $btn.Foreground = (Brush '#FF7088')
+    $btn.IsHitTestVisible = $true
+    # garante um unico handler de desinstalar por botao (nao re-anexa em re-deteccoes)
+    if (-not $script:UninstallWired) { $script:UninstallWired = @{} }
+    $key = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($btn)
+    if (-not $script:UninstallWired.ContainsKey($key)) {
+        $btn.Add_Click({ param($snd,$e)
+            if ($snd.Content -ne 'desinstalar') { return }  # so age no estado "desinstalar"
+            $a = $snd.Tag
+            Start-AppUninstall $snd $a.N $a.W
+        })
+        $script:UninstallWired[$key] = $true
+    }
+}
+
+function Set-AppNotInstalled($btn) {
+    if (-not $btn) { return }
+    $btn.Content = 'instalar'
+    $btn.Foreground = (Brush '#8CA0AD')
+    $btn.IsHitTestVisible = $true
+}
+
+function Start-AppUninstall($btn, $name, $wid) {
+    if (-not (Test-Winget)) { Write-Status 'winget nao encontrado.'; return }
+    if (-not $wid) { Write-Status ('sem id winget pra desinstalar: ' + $name); return }
     $btn.IsHitTestVisible = $false
+    $btn.Content = 'na fila...'
+    $script:UninstallQueue += @{ Btn = $btn; Name = $name; Wid = $wid }
+    Pump-Uninstalls
+}
+
+function Pump-Uninstalls {
+    if ($script:UninstallActive) { return }
+    if (-not $script:UninstallQueue -or $script:UninstallQueue.Count -eq 0) {
+        if ($script:UninstallTimer) { $script:UninstallTimer.Stop(); $script:UninstallTimer = $null }
+        return
+    }
+    $job = $script:UninstallQueue[0]
+    $script:UninstallQueue = @($script:UninstallQueue | Select-Object -Skip 1)
+    $job.Btn.Content = 'removendo...'
+    Write-Status ('desinstalando: ' + $job.Name + ' ...')
+    $wg = Get-WingetPath
+    if (-not $wg) {
+        Set-AppInstalled $job.Btn
+        Write-Status 'winget nao encontrado.'
+        Pump-Uninstalls; return
+    }
+    try {
+        # comando oficial: winget uninstall -h --id ID --silent --accept-source-agreements
+        # --source winget evita prompt de acordo da Microsoft Store
+        $proc = Start-Process -FilePath $wg -ArgumentList @('uninstall','--id',$job.Wid,'--silent','--accept-source-agreements','--disable-interactivity') -WindowStyle Hidden -PassThru -ErrorAction Stop
+        $script:UninstallActive = @{ Proc = $proc; Btn = $job.Btn; Name = $job.Name }
+        Ensure-UninstallTimer
+    } catch {
+        Set-AppInstalled $job.Btn
+        Write-Status ('erro desinstalando ' + $job.Name + ': ' + $_.Exception.Message)
+        Pump-Uninstalls
+    }
+}
+
+function Ensure-UninstallTimer {
+    if ($script:UninstallTimer) { return }
+    $script:UninstallTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:UninstallTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $script:UninstallTimer.Add_Tick({
+        $job = $script:UninstallActive
+        if (-not $job) { Pump-Uninstalls; return }
+        try { if (-not $job.Proc.HasExited) { return } } catch { }
+        $ec = -1
+        try { $ec = $job.Proc.ExitCode } catch { }
+        if ($ec -eq 0) {
+            Set-AppNotInstalled $job.Btn; Write-Status ('ok: ' + $job.Name + ' desinstalado.')
+        }
+        else {
+            # winget falhou (app sem id do repo, instalado por fora, etc).
+            # Fallback igual ao Winhance: acha a UninstallString no registro e roda.
+            $us = Get-UninstallStringFromRegistry $job.Name
+            if ($us) {
+                Write-Status ($job.Name + ': winget nao removeu, tentando via registro do Windows...')
+                try {
+                    Start-Process -FilePath $env:ComSpec -ArgumentList ('/c ' + $us) -WindowStyle Hidden -ErrorAction Stop
+                    Set-AppNotInstalled $job.Btn
+                    Write-Status ('ok: ' + $job.Name + ' desinstalado (via registro).')
+                } catch {
+                    Set-AppInstalled $job.Btn
+                    Write-Status ($job.Name + ': falha no desinstalador do registro - ' + $_.Exception.Message)
+                }
+            } else {
+                Set-AppInstalled $job.Btn
+                Write-Status ($job.Name + ': winget saiu com codigo ' + $ec + ' (cancelado ou nao encontrado).')
+            }
+        }
+        $script:UninstallActive = $null
+        Pump-Uninstalls
+    })
+    $script:UninstallTimer.Start()
+}
+
+# Fallback de desinstalacao via registro do Windows (ARP), espelhando a logica do Winhance:
+# procura a UninstallString nas 3 chaves padrao (HKLM 64/32 + HKCU) casando pelo nome do app.
+function Get-UninstallStringFromRegistry($appName) {
+    if (-not $appName) { return $null }
+    $needle = $appName.ToLowerInvariant().Trim()
+    $paths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($p in $paths) {
+        $entries = Get-ItemProperty $p -ErrorAction SilentlyContinue | Where-Object {
+            $_.DisplayName -and $_.UninstallString -and
+            $_.DisplayName.ToLowerInvariant().Contains($needle)
+        }
+        foreach ($e in $entries) {
+            $us = [string]$e.UninstallString
+            if ($us) {
+                # prefere desinstalacao silenciosa quando o desinstalador suporta /S (NSIS) ou msiexec /x
+                if ($us -match 'msiexec' -and $us -notmatch '/quiet|/qn') { $us = $us -replace '/I', '/X'; $us = $us + ' /quiet /norestart' }
+                return $us
+            }
+        }
+    }
+    return $null
 }
 
 function Get-WingetPath {
@@ -1341,6 +1463,7 @@ function Build-ModeContent {
                     if ($script:ghostStyle) { $ib.Style = $script:ghostStyle }
                     $ib.Content = 'instalar'; $ib.Tag = $app; $ib.MinWidth = 78
                     $ib.Add_Click({ param($snd,$e)
+                        if ($snd.Content -ne 'instalar') { return }  # nao age se estiver "desinstalar"/em progresso
                         $a = $snd.Tag
                         Start-AppInstall $snd $a.N $a.W
                     })
