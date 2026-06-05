@@ -1,5 +1,5 @@
 # =====================================================================
-#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.5)
+#  Soft Projetos - Boost  |  Otimizador do Windows  (v1.0.7)
 #  Uso:  irm boost.softprojetos.com | iex
 #  - Limpeza de tranqueiras (debloat), privacidade/telemetria e jogos
 #  - Tudo reversível; cria ponto de restauração antes de aplicar
@@ -1053,18 +1053,18 @@ function Start-AppInstall($btn, $name, $wid) {
     if (-not (Test-Winget)) { Write-Status 'winget nao encontrado. instale o App Installer pela Microsoft Store.'; return }
     $btn.IsHitTestVisible = $false
     $btn.Content = 'na fila...'
-    $script:InstallQueue += @{ Btn = $btn; Name = $name; Wid = $wid }
+    $script:InstallQueue.Add(@{ Btn = $btn; Name = $name; Wid = $wid })
     Pump-Installs
 }
 
 function Pump-Installs {
     if ($script:InstallActive) { return }
-    if (-not $script:InstallQueue -or $script:InstallQueue.Count -eq 0) {
+    if ($script:InstallQueue.Count -eq 0) {
         if ($script:InstallTimer) { $script:InstallTimer.Stop(); $script:InstallTimer = $null }
         return
     }
     $job = $script:InstallQueue[0]
-    $script:InstallQueue = @($script:InstallQueue | Select-Object -Skip 1)
+    $script:InstallQueue.RemoveAt(0)
     $job.Btn.Content = 'instalando...'
     Write-Status ('instalando: ' + $job.Name + ' ...')
     $wg = Get-WingetPath
@@ -1127,18 +1127,18 @@ function Start-AppUninstall($btn, $name, $wid) {
     if (-not $wid) { Write-Status ('sem id winget pra remover: ' + $name); return }
     $btn.IsHitTestVisible = $false
     $btn.Content = 'na fila...'
-    $script:UninstallQueue += @{ Btn = $btn; Name = $name; Wid = $wid }
+    $script:UninstallQueue.Add(@{ Btn = $btn; Name = $name; Wid = $wid })
     Pump-Uninstalls
 }
 
 function Pump-Uninstalls {
     if ($script:UninstallActive) { return }
-    if (-not $script:UninstallQueue -or $script:UninstallQueue.Count -eq 0) {
+    if ($script:UninstallQueue.Count -eq 0) {
         if ($script:UninstallTimer) { $script:UninstallTimer.Stop(); $script:UninstallTimer = $null }
         return
     }
     $job = $script:UninstallQueue[0]
-    $script:UninstallQueue = @($script:UninstallQueue | Select-Object -Skip 1)
+    $script:UninstallQueue.RemoveAt(0)
     $job.Btn.Content = 'removendo...'
     Write-Status ('desinstalando: ' + $job.Name + ' ...')
     $wg = Get-WingetPath
@@ -1468,15 +1468,23 @@ function Build-ModeContent {
                     if ($script:ghostStyle) { $ib.Style = $script:ghostStyle }
                     $ib.Content = 'instalar'; $ib.Tag = $app; $ib.MinWidth = 78
                     # UM unico handler decide a acao pelo estado atual do botao.
+                    # Em PowerShell/WPF o sender chega em $this (nao via param()).
                     # 'instalar' -> instala; 'remover' -> remove. Estados de progresso
                     # ('na fila...', 'instalando...', 'removendo...') sao ignorados.
-                    $ib.Add_Click({ param($snd,$e)
-                        $a = $snd.Tag
-                        if (-not $a) { return }
-                        switch ([string]$snd.Content) {
-                            'instalar' { Start-AppInstall $snd $a.N $a.W }
-                            'remover'  { Start-AppUninstall $snd $a.N $a.W }
-                            default    { }  # em progresso: nao faz nada
+                    $ib.Add_Click({
+                        try {
+                            $btn = $this
+                            $a = $btn.Tag
+                            if (-not $a) { return }
+                            switch ([string]$btn.Content) {
+                                'instalar' { Start-AppInstall $btn $a.N $a.W }
+                                'remover'  { Start-AppUninstall $btn $a.N $a.W }
+                                default    { }  # em progresso: nao faz nada
+                            }
+                        } catch {
+                            $ln = ''
+                            try { $ln = ' [L' + $_.InvocationInfo.ScriptLineNumber + ': ' + ($_.InvocationInfo.Line).Trim() + ']' } catch {}
+                            Write-Status ('erro no clique: ' + $_.Exception.Message + $ln)
                         }
                     })
                     $row.AddChild($ib)
@@ -1545,7 +1553,13 @@ try {
     # rede de seguranca: qualquer excecao nao tratada em handler/timer eh logada, NAO derruba o app
     $script:Window.Dispatcher.add_UnhandledException({ param($snd,$e)
         $e.Handled = $true
-        try { Write-Status ('!! erro capturado (app continua): ' + $e.Exception.Message) } catch {}
+        try {
+            $ex = $e.Exception
+            $line = ''
+            try { if ($ex.InnerException) { $ex = $ex.InnerException } } catch {}
+            try { $line = ' @ ' + ($ex.StackTrace -split "`n" | Select-Object -First 1).Trim() } catch {}
+            Write-Status ('!! erro capturado (app continua): ' + $ex.Message + $line)
+        } catch {}
     })
 
     try {
@@ -1563,9 +1577,15 @@ try {
     $script:swStyle = $script:Window.Resources['Switch']
     $script:ghostStyle = $script:Window.Resources['Ghost']
     $script:RestoreDone = $false
-    $script:InstallQueue = @()
+    # Filas como List[object]: manipular via .Add()/.RemoveAt() preserva as
+    # referencias aos controles WPF. Usar pipeline (Select-Object) corrompe o
+    # objeto e quebra $job.Btn.Content (era a causa do erro ao remover apps).
+    $script:InstallQueue = New-Object 'System.Collections.Generic.List[object]'
     $script:InstallActive = $null
     $script:InstallTimer = $null
+    $script:UninstallQueue = New-Object 'System.Collections.Generic.List[object]'
+    $script:UninstallActive = $null
+    $script:UninstallTimer = $null
     $script:Panels = @{}
     $script:NavButtons = @{}
     $script:UpdCards = @{}
