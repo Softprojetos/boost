@@ -1,0 +1,16 @@
+# Logs do Boost
+*.log
+SoftProjetos-Boost/
+
+# Temporários
+*.tmp
+boost-wg-*.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editores
+.vscode/
+.idea/
+*.swp
