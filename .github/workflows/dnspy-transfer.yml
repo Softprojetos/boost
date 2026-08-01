@@ -1,0 +1,31 @@
+name: dnSpy artifact transfer
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/dnspy-transfer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir artifact
+          base='https://downloads.softprojetos.com/dnspy-transfer-a226807-7f3c91'
+          curl --fail --location --retry 3 "$base/dnSpyEx-Enhanced-v6.6.0-enhanced.1-win-x64.zip" --output artifact/dnSpyEx-Enhanced-v6.6.0-enhanced.1-win-x64.zip
+          curl --fail --location --retry 3 "$base/dnSpyEx-Enhanced-v6.6.0-enhanced.1-source.zip" --output artifact/dnSpyEx-Enhanced-v6.6.0-enhanced.1-source.zip
+          curl --fail --location --retry 3 "$base/dnSpyEx-Enhanced-v6.6.0-enhanced.1.patch" --output artifact/dnSpyEx-Enhanced-v6.6.0-enhanced.1.patch
+          sha256sum artifact/*
+      - name: Upload transfer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnspy-enhanced-a226807
+          path: artifact/*
+          compression-level: 0
+          retention-days: 1
